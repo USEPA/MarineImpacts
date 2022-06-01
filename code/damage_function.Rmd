@@ -1,0 +1,231 @@
+---
+title: "damage_functions"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+ Script to generate a damage function for the social cost of ocean acidification
+ Corinne Hartin CCD/CSIB
+ May 2022
+
+ Inputs:
+ 
+ timeseries of the following:
+
+1. welfare estimates in USD for all scenarios
+ 
+2. ocean pH global mean
+ 
+3. global mean surface temperature
+
+ Fit a function to both pH and GMT. Testing out Canada and USA for RCP2.6 and RCP8.5
+
+```{r libraries, include = FALSE}
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(equatiomatic)
+library(plot3D)
+```
+
+```{r wlefare, echo = FALSE, include = FALSE}
+
+# read in welfare estimates
+welfare_us <- read_excel("data/US total annual economic impacts.xlsx") %>% 
+  select(year, "RCP2.6 vs Present", "RCP8.5 vs Present") %>% 
+  rename(rcp26 = "RCP2.6 vs Present") %>% 
+  rename(rcp85 = "RCP8.5 vs Present") %>% 
+  pivot_longer(cols = c("rcp26", "rcp85"),
+               names_to = "scenario",
+               values_to = "welfare"
+                 ) %>% 
+  mutate(welfare = welfare / 10^6) %>%  #convert to millions of dollars 
+  mutate(region = "USA") %>% 
+  as.data.frame()
+
+welfare_can <- read_excel("data/Canada total annual economic impacts.xlsx") %>% 
+  select(Year, "RCP2.6 vs Present", "RCP8.5 vs Present") %>% 
+  rename(rcp26 = "RCP2.6 vs Present") %>% 
+  rename(rcp85 = "RCP8.5 vs Present") %>%
+  rename(year = "Year") %>% 
+  pivot_longer(cols = c("rcp26", "rcp85"),
+               names_to = "scenario",
+               values_to = "welfare"
+  ) %>% 
+  mutate(welfare = welfare / 10^6) %>%  #convert to millions of dollars 
+  mutate(region = "Canada") %>% 
+  as.data.frame()
+
+welfare <- full_join(welfare_us, welfare_can)
+  
+
+```
+## Plot Welfare
+
+```{r welfare, echo=FALSE}
+ggplot(welfare, 
+       aes(year, welfare, color = scenario)) +
+  facet_grid(~ region, scales = "free") +
+  geom_point()+
+  theme_minimal()
+  
+```
+
+```{r pH data, echo = FALSE}
+# read in pH data
+# Travis recommends taking the mean of the 3 models - pH values are both surface and bottom.  Do I just want surface? yes, b/c that's all the SCM can produce
+# Or do i want to try with [CO2] - maybe try both
+# global hydrogen ion - need to convert to pH
+
+ph <- read.csv("data/GlobalYearlyAveragepH.csv") %>% 
+  select(Year, GFDL.ESM2G.26hsurf, IPSL.CM5AMR.26hsurf, GFDL.ESM2G.85hsurf,
+         IPSL.CM5AMR.85hsurf, MPI.ESMMR.26hsurf, MPI.ESMMR.85hsurf) %>% 
+  pivot_longer(cols = c("GFDL.ESM2G.26hsurf", "IPSL.CM5AMR.26hsurf", "GFDL.ESM2G.85hsurf"
+                        ,"IPSL.CM5AMR.85hsurf", "MPI.ESMMR.26hsurf", "MPI.ESMMR.85hsurf"),
+               names_to = "model",
+               values_to = "value") %>% 
+  rename(year = Year) %>% 
+  separate(model, c("model","B", "scenario") ) %>% 
+  select(-B) %>% 
+  pivot_wider(names_from = scenario, 
+              values_from = value) %>% 
+  group_by(year) %>% 
+  summarise(rcp26 = mean(`26hsurf`), rcp85 = mean(`85hsurf`) ) %>% 
+  mutate(rcp26 = -log10(rcp26*10^-6)) %>%
+#    mutate(rcp26 = (rcp26*10^-6)) %>% 
+  mutate(rcp85 = -log10(rcp85*10^-6)) %>% 
+#  mutate(rcp85 = (rcp85*10^-6)) %>% 
+  select(year, rcp26, rcp85) %>% 
+  pivot_longer(cols = c("rcp26","rcp85"),
+               names_to = "scenario",
+               values_to = "pH")
+
+avg_ph <- ph %>% 
+  filter(year %in% c(2011:2020)) %>% 
+  summarise(avg = mean(pH))
+
+ph <- ph %>% 
+  mutate("pH" = pH - avg_ph$avg) %>% 
+  filter(year >2019) %>% 
+  as.data.frame()
+```
+## Plot pH
+
+```{r pH plot, echo = FALSE}
+ggplot(ph, aes(year, pH, color = scenario))+
+  geom_point()+
+  theme_minimal()
+```
+
+
+```{r temperature data, echo = FALSE}
+# temperature files from Hector comparison data
+
+RCP26 <- read.csv("data/summary_rcp26.csv") %>% 
+  filter(vtag == "tgav") %>% 
+  select(year, meanvalue, scenario)
+
+avg_26 <- RCP26 %>% 
+  filter(year %in% c(2011:2020)) %>% 
+  summarise(avg = mean(meanvalue))
+
+RCP26 <- RCP26 %>% 
+  mutate("temp" = meanvalue - avg_26$avg)
+
+RCP85 <- read.csv("data/summary_rcp85.csv") %>% 
+  filter(vtag == "tgav") %>% 
+  select(year, meanvalue, scenario)
+
+avg_85 <- RCP85 %>% 
+  filter(year %in% c(2011:2020)) %>% 
+  summarise(avg = mean(meanvalue))
+
+RCP85 <- RCP85 %>% 
+  mutate("temp" = meanvalue - avg_85$avg)
+
+temperature <- rbind(RCP26, RCP85) %>% 
+  filter(year %in% (2020:2100) ) %>% 
+  select(-meanvalue)
+```
+
+## Plot Temperature
+
+```{r plot temperature, echo = FALSE}
+ggplot(temperature, aes(year, temp, color = scenario)) +
+  geom_point() +
+  theme_minimal()
+```
+
+```{r join data, echo = FALSE, include = FALSE}
+canada <- left_join(welfare_can, temperature)
+canada <- left_join(canada, ph)
+
+usa <- left_join(welfare_us, temperature)
+usa <- left_join(usa, ph)
+
+total_welfare <- rbind(usa, canada)
+```
+
+## Plot Damages v Temp
+
+```{r dam v temp, echo = FALSE}
+ggplot(total_welfare, aes(temp, welfare, color = scenario))+
+  geom_point() +
+  facet_wrap(~region)+
+  theme_minimal()
+```
+
+## Plot Damages v pH
+
+```{r dam v pH, echo = FALSE}
+ggplot(total_welfare, aes(pH, welfare, color = scenario))+
+  geom_point() +
+  facet_wrap(~region)+
+  theme_minimal()
+```
+
+## test out different fits
+### Canada
+the small p-value below shows that the added complexity increases the fit, however, it looks like going to a polynomial fit does not increase the fit much more...
+
+```{r anova can, echo = FALSE}
+df <- total_welfare %>% 
+  filter(region == "Canada")
+  
+model1 = lm(welfare~ temp, data=df )
+model2 = lm(welfare~pH+temp, data = df)
+model3 = lm(welfare~pH+poly(temp,2), data = df)
+
+print(anova(model1, model2, model3))
+#The most important value in the entire output is the p-value because this tells us whether there is a significant difference in the mean values between the three groups.
+summary(model2)
+extract_eq(model2, use_coefs = TRUE, fix_signs = FALSE)
+
+summary(model3)
+extract_eq(model3, use_coefs = TRUE, fix_signs = FALSE)
+```
+
+### USA
+the small p-value below shows that the added complexity increases the fit, however, it looks like going to a polynomial fit does not increase the fit much more...
+
+```{r anova usa, echo = FALSE}
+df <- total_welfare %>% 
+  filter(region == "USA")
+  
+model1 = lm(welfare~ temp, data=df )
+model2 = lm(welfare~pH+temp, data = df)
+model3 = lm(welfare~pH+poly(temp,2), data = df)
+
+print(anova(model1, model2, model3))
+#The most important value in the entire output is the p-value because this tells us whether there is a significant difference in the mean values between the three groups.
+summary(model2)
+extract_eq(model2, use_coefs = TRUE, fix_signs = FALSE)
+
+summary(model3)
+extract_eq(model3, use_coefs = TRUE, fix_signs = FALSE)
+```
